@@ -1,0 +1,239 @@
+#!/bin/bash
+
+function usage {
+  cat <<EOF
+Usage:
+  git switch-fetch-remote [options]
+
+Description:
+  Switch git fetch remote.
+
+Options:
+  -d, --dir <path>      Path of the directory where the .git directory exists. (Default: .)
+  -r, --restore         Restore from backup.
+  -h, --help            Show this help text.
+EOF
+}
+
+OS=''
+if [ $(uname) = 'Darwin' ]; then
+  OS='mac'
+elif [ $(uname) = 'Linux' ]; then
+  OS='linux'
+else
+  OS='other'
+fi
+
+function backup {
+  # Directory path where backups will be saved.
+  BACKUP_DIR=$1
+  # File path to be backed up.
+  TARGET_FILE=$2
+
+  if [ ! -d $BACKUP_DIR ]; then
+    mkdir $BACKUP_DIR
+  fi
+
+  # Extract file name from path string.
+  TARGET_FILENAME=${TARGET_FILE##*/}
+
+  TODAY=$(date "+%Y-%m-%d_%H:%M:%S")
+  cp "${TARGET_FILE}" "${BACKUP_DIR}/${TARGET_FILENAME}.${TODAY}.bak"
+
+  return 0
+}
+
+function restore {
+  # Directory path where backups are stored.
+  BACKUP_DIR=$1
+  # Directory path to restore.
+  DIST_DIR=$2
+
+  # Sort by creation date to get file name.
+  _files=($(ls -Ut $BACKUP_DIR))
+
+  if [ ${#_files[*]} -eq 0 ]; then
+    echo 'Backup does not exist.'
+    exit 1
+  fi
+
+  while true; do
+    PS3='Select the files you want to restore. Press q to exit. > '
+    select selected_file in ${_files[@]}; do
+      # $REPLY: input value.
+      if [ "${REPLY}" = "q" ]; then
+        echo "Exit."
+        exit 0
+      fi
+
+      if [ -n "${selected_file}" ]; then
+        cat "${BACKUP_DIR}/${selected_file}"
+        read -n1 -p "Restore this file? (y/N): " yn
+        case "$yn" in
+        [yY])
+          cp "${BACKUP_DIR}/${selected_file}" "${DIST_DIR}/config"
+          echo -e '\nRestored.'
+          exit 0
+          ;;
+        *)
+          echo -e '\n'nn
+          break
+          ;;
+        esac
+      else
+        echo "Please enter a range from 1 to ${#_files[*]}"
+      fi
+    done
+  done
+}
+
+dir_option=''
+restore_mode=false
+# Option parse.
+while getopts d:rh-: OPT; do
+  case $OPT in
+  -) # Long options.
+    case "${OPTARG}" in
+    dir)
+      # OPTIND：A type of shell variable. Index of the argument currently being processed.
+      # Indirect expansion (${! variable}) to get the next argument (the value for this option).
+      dir_option="${!OPTIND}"
+      # Function expansion is performed and the next argument is obtained, which is manually incremented.
+      OPTIND=$(($OPTIND + 1))
+      ;;
+    restore)
+      restore_mode=true
+      ;;
+    help)
+      usage
+      exit 0
+      ;;
+    *)
+      usage
+      exit 1
+      ;;
+    esac
+    ;;
+  d)
+    dir_option=$OPTARG
+    ;;
+  r)
+    restore_mode=true
+    ;;
+  h)
+    usage
+    exit 0
+    ;;
+  *)
+    usage
+    exit 1
+    ;;
+  esac
+done
+
+GIT_DIR='./.git'
+if [ -n "${dir_option}" ]; then
+  # If there is a "/" at the end, delete it.
+  if [ ${dir_option: -1} = '/' ]; then
+    dir_option=$(expr ${dir_option%?})
+  fi
+
+  GIT_DIR="${dir_option}/.git"
+
+  if [ ! -d $GIT_DIR ]; then
+    echo "${GIT_DIR} does not exist."
+    exit 1
+  fi
+fi
+
+CONFIG_FILE="${GIT_DIR}/config"
+BACKUP_DIR="${GIT_DIR}/backups"
+
+if [ ! -e $CONFIG_FILE ]; then
+  echo "${CONFIG_FILE} does not exist."
+  exit 1
+fi
+
+if [ ! -r $CONFIG_FILE ]; then
+  echo "No read permission to ${CONFIG_FILE}."
+  exit 1
+fi
+
+if [ ! -w $CONFIG_FILE ]; then
+  echo "No write permission to ${CONFIG_FILE}"
+  exit 1
+fi
+
+if $restore_mode; then
+  restore $BACKUP_DIR $GIT_DIR
+  exit 0
+fi
+
+# Flag if it is section remote. e.g. [remote "origin"]
+is_remote_section=false
+
+urls=()
+
+while read line; do
+  if [[ "$line" =~ ^\[remote(.+)\]$ ]]; then
+    # Match [remote ...]
+    is_remote_section=true
+  elif [[ "$line" =~ ^\[(.+)\]$ ]]; then
+    # Match [...] other than [remote ...]
+    is_remote_section=false
+  fi
+
+  if $is_remote_section; then
+    if [[ "$line" =~ ^url ]]; then
+      url=${line#*url*=}
+      urls+=($url)
+    fi
+  fi
+done <$CONFIG_FILE
+
+if [ ${#urls[*]} -le 1 ]; then
+  echo 'Only one remote is registered. Exit.'
+  exit 1
+fi
+
+PS3='Please select the repository to fetch to. Press q to exit. > '
+select selected_url in ${urls[@]}; do
+  # $REPLY: input value.
+  if [ "${REPLY}" = "q" ]; then
+    echo "Exit."
+    exit 0
+  fi
+
+  if [ -n "${selected_url}" ]; then
+    break
+  else
+    echo "Please enter a range from 1 to ${#urls[*]}"
+  fi
+done
+
+backup ${BACKUP_DIR} ${CONFIG_FILE}
+
+# Temporary value for replacement.
+temp1='FE369C8894334D77B731E50A41B8C14A'
+temp2='A3D5F294C9E4478B8DE3B3AFEE37C734'
+
+# Replace.
+if [ "${OS}" = 'mac' ]; then
+  sed -i '' "s|${urls[0]}|${temp1}|" ${CONFIG_FILE}
+  sed -i '' "s|${selected_url}|${temp2}|" ${CONFIG_FILE}
+
+  sed -i '' "s|${temp1}|${selected_url}|" ${CONFIG_FILE}
+  sed -i '' "s|${temp2}|${urls[0]}|" ${CONFIG_FILE}
+elif [ "${OS}" = 'linux' ]; then
+  sed -i "s|${urls[0]}|${temp1}|" ${CONFIG_FILE}
+  sed -i "s|${selected_url}|${temp2}|" ${CONFIG_FILE}
+
+  sed -i "s|${temp1}|${selected_url}|" ${CONFIG_FILE}
+  sed -i "s|${temp2}|${urls[0]}|" ${CONFIG_FILE}
+else
+  echo 'Unsupported OS. Exit.'
+  exit 1
+fi
+
+echo "The fetch destination repository has been changed to ${selected_url}."
+exit 0
